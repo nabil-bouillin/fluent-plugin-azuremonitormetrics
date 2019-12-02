@@ -1,19 +1,9 @@
-require 'fluent/input'
+require 'fluent/plugin/input'
 require 'azure_mgmt_monitor'
-require 'uri'
 
-class Fluent::AzureMonitorMetricsInput < Fluent::Input
+module Fluent::Plugin
+class AzureMonitorMetricsInput < Input
   Fluent::Plugin.register_input("azuremonitormetrics", self)
-
-  # To support log_level option implemented by Fluentd v0.10.43
-  unless method_defined?(:log)
-    define_method("log") { $log }
-  end
-
-  # Define `router` method of v0.12 to support v0.10 or earlier
-  unless method_defined?(:router)
-    define_method("router") { Fluent::Engine }
-  end
 
   config_param :tag,                :string
   config_param :tenant_id,          :string, :default => nil
@@ -28,18 +18,13 @@ class Fluent::AzureMonitorMetricsInput < Fluent::Input
   config_param :filter,             :string, :default => nil
   config_param :result_type,        :string, :default => nil
   config_param :metrics,            :string, :default => nil
-  config_param :api_version,        :string, :default => "2017-05-01-preview"
-
-  def initialize
-    super
-  end
+  config_param :api_version,        :string, :default => "2018-01-01"
 
   def configure(conf)
     super
-
     provider = MsRestAzure::ApplicationTokenProvider.new(@tenant_id, @client_id, @client_secret)
     credentials = MsRest::TokenCredentials.new(provider)
-    @client = Azure::ARM::Monitor::MonitorManagementClient.new(credentials);
+    @client = Azure::Monitor::Mgmt::V2018_01_01::MonitorManagementClient.new(credentials);
   end
 
   def start
@@ -65,12 +50,13 @@ class Fluent::AzureMonitorMetricsInput < Fluent::Input
     }
 
     "and (#{param_string})"
-
   end
 
   def set_path_options(start_time, end_time, custom_headers)
     fail ArgumentError, 'start_time is nil' if start_time.nil?
+    
     request_headers = {}
+    request_headers['Content-Type'] = 'application/json; charset=utf-8'
 
     # Set Headers
     request_headers['x-ms-client-request-id'] = SecureRandom.uuid
@@ -93,6 +79,16 @@ class Fluent::AzureMonitorMetricsInput < Fluent::Input
         headers: request_headers.merge(custom_headers || {}),
         base_url: @client.base_url
     }
+
+    request_url = @client.base_url
+
+    options = {
+        middlewares: [[MsRest::RetryPolicyMiddleware, times: 3, retry: 0.02], [:cookie_jar]],
+        skip_encoding_path_params: {'resourceUri' => resource_uri},
+        query_params: {'timespan' => timespan,'interval' => interval,'metricnames' => metricnames,'aggregation' => aggregation,'top' => top,'orderby' => orderby,'$filter' => filter,'resultType' => result_type,'api-version' => @client.api_version,'metricnamespace' => metricnamespace},
+        headers: request_headers.merge(custom_headers || {}),
+        base_url: request_url
+    }
   end
 
   private
@@ -111,15 +107,15 @@ class Fluent::AzureMonitorMetricsInput < Fluent::Input
         monitor_metrics_promise = get_monitor_metrics_async(start_time, end_time)
         monitor_metrics = monitor_metrics_promise.value!
 
-        router.emit(@tag, Time.now.to_i, monitor_metrics.body['value'])
+        router.emit(@tag,  Fluent::Engine.now, monitor_metrics.body['value'])
         @next_fetch_time += @timespan
         sleep @timespan
     end
-
   end
 
   def get_monitor_metrics_async(start_time, end_time,filter = nil, custom_headers = nil)
-    path_template = '/{resourceUri}/providers/microsoft.insights/metrics'
+    #path_template = '/{resourceUri}/providers/microsoft.insights/metrics'
+    path_template = '{resourceUri}/providers/microsoft.insights/metrics'
 
     options = set_path_options(start_time, end_time, custom_headers)
     promise = @client.make_request_async(:get, path_template, options)
@@ -130,24 +126,25 @@ class Fluent::AzureMonitorMetricsInput < Fluent::Input
       response_content = http_response.body
       unless status_code == 200
         error_model = JSON.load(response_content)
-        log.error("Error occurred while sending the request")
-        log.error(error_model)
+        fail MsRest::HttpOperationError.new(result.request, http_response, error_model)
       end
-
+      
       result.request_id = http_response['x-ms-request-id'] unless http_response['x-ms-request-id'].nil?
+      result.correlation_request_id = http_response['x-ms-correlation-request-id'] unless http_response['x-ms-correlation-request-id'].nil?
+      result.client_request_id = http_response['x-ms-client-request-id'] unless http_response['x-ms-client-request-id'].nil?
       # Deserialize Response
       if status_code == 200
         begin
-          result.body = response_content.to_s.empty? ? nil : JSON.load(response_content)
+          parsed_response = response_content.to_s.empty? ? nil : JSON.load(response_content)
+          result_mapper = Azure::Monitor::Mgmt::V2018_01_01::Models::Response.mapper()
+          #result.body = response_content.to_s.empty? ? nil : JSON.load(response_content)
+          result.body = @client.deserialize(result_mapper, parsed_response)
         rescue Exception => e
-          log.error("Error occurred in parsing the response")
-          log.error(e)
+          fail MsRest::DeserializationError.new('Error occurred in deserializing the response', e.message, e.backtrace, result)
         end
       end
-
       result
     end
-
     promise.execute
   end
 end

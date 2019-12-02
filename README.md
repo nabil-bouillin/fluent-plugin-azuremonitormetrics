@@ -1,4 +1,9 @@
 # fluent-plugin-azuremonitormetric, a plugin for [Fluentd](http://fluentd.org) 
+## Requirements
+| fluent_mgmt_monitor | fluentd | ruby |
+|------------------------|---------|------|
+| >= 0.17.5 | >= v1.7.4 | >= 2.5 |
+
 ## Overview
 
 [Azure Monitor Metrics](https://docs.microsoft.com/en-us/rest/api/monitor/Metrics/List) input plugin.
