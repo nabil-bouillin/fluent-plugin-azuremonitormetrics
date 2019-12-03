@@ -5,20 +5,22 @@ module Fluent::Plugin
 class AzureMonitorMetricsInput < Input
   Fluent::Plugin.register_input("azuremonitormetrics", self)
 
-  config_param :tag,                :string
-  config_param :tenant_id,          :string, :default => nil
-  config_param :client_id,          :string, :default => nil
-  config_param :client_secret,      :string, :default => nil, :secret => true
+  config_param :tag, :string
+  config_param :tenant_id, :string, :default => nil
+  config_param :client_id, :string, :default => nil
+  config_param :client_secret, :string, :default => nil, :secret => true
 
-  config_param :timespan,           :integer, :default => 300
-  config_param :interval,           :string, :default => "PT1M"
-  config_param :resource_uri,       :string, :default => nil
-  config_param :aggregation,        :string, :default => nil
-  config_param :top,                :integer, :default => nil
-  config_param :filter,             :string, :default => nil
-  config_param :result_type,        :string, :default => nil
-  config_param :metrics,            :string, :default => nil
-  config_param :api_version,        :string, :default => "2018-01-01"
+  config_param :timespan, :integer, :default => 300
+  config_param :interval, :string, :default => "PT1M"
+  config_param :resource_uri, :string, :default => nil
+  config_param :aggregation, :string, :default => nil
+  config_param :top, :integer, :default => nil
+  config_param :filter, :string, :default => nil
+  config_param :resultType, :string, :default => nil
+  config_param :metricnames, :string, :default => nil
+  config_param :api_version, :string, :default => "2018-01-01"
+  config_param :metricnamespace, :string, :default => nil
+  config_param :orderby, :string, :default => nil
 
   def configure(conf)
     super
@@ -38,23 +40,9 @@ class AzureMonitorMetricsInput < Input
     @watcher.join
   end
 
-  def get_param_string(original_param, query_string)
-    array = original_param.split(',')
-    param_string = ''
-    array.each {|var|
-      if param_string.empty?
-        param_string += "#{query_string} eq '#{var}'"
-      else
-        param_string += " or #{query_string} eq '#{var}'"
-      end
-    }
-
-    "and (#{param_string})"
-  end
-
   def set_path_options(start_time, end_time, custom_headers)
     fail ArgumentError, 'start_time is nil' if start_time.nil?
-    
+
     request_headers = {}
     request_headers['Content-Type'] = 'application/json; charset=utf-8'
 
@@ -65,27 +53,12 @@ class AzureMonitorMetricsInput < Input
     timespanstring = "#{start_time.utc.iso8601}/#{end_time.utc.iso8601}"
     top = @filter.nil? ? nil : @top
 
-    {
-        middlewares: [[MsRest::RetryPolicyMiddleware, times: 3, retry: 0.02], [:cookie_jar]],
-        path_params: {'resourceUri' => @resource_uri},
-        query_params: {'api-version' => @api_version,
-                       '$top' => top,
-                       '$filter' => @filter,
-                       'timespan' => timespanstring,
-                       'interval' => @interval,
-                       'metric' => @metrics,
-                       'resultType' => @result_type,
-                       'aggregation'=> @aggregation},
-        headers: request_headers.merge(custom_headers || {}),
-        base_url: @client.base_url
-    }
-
     request_url = @client.base_url
 
     options = {
         middlewares: [[MsRest::RetryPolicyMiddleware, times: 3, retry: 0.02], [:cookie_jar]],
-        skip_encoding_path_params: {'resourceUri' => resource_uri},
-        query_params: {'timespan' => timespan,'interval' => interval,'metricnames' => metricnames,'aggregation' => aggregation,'top' => top,'orderby' => orderby,'$filter' => filter,'resultType' => result_type,'api-version' => @client.api_version,'metricnamespace' => metricnamespace},
+        skip_encoding_path_params: {'resourceUri' => @resource_uri},
+        query_params: {'timespan' => timespanstring,'interval' => @interval,'metricnames' => @metricnames,'aggregation' => @aggregation,'top' => top,'orderby' => @orderby,'$filter' => @filter,'resultType' => @resultType,'api-version' => @api_version,'metricnamespace' => @metricnamespace},
         headers: request_headers.merge(custom_headers || {}),
         base_url: request_url
     }
@@ -103,7 +76,6 @@ class AzureMonitorMetricsInput < Input
 
         log.debug "start time: #{start_time}, end time: #{end_time}"
 
-
         monitor_metrics_promise = get_monitor_metrics_async(start_time, end_time)
         monitor_metrics = monitor_metrics_promise.value!
 
@@ -114,7 +86,6 @@ class AzureMonitorMetricsInput < Input
   end
 
   def get_monitor_metrics_async(start_time, end_time,filter = nil, custom_headers = nil)
-    #path_template = '/{resourceUri}/providers/microsoft.insights/metrics'
     path_template = '{resourceUri}/providers/microsoft.insights/metrics'
 
     options = set_path_options(start_time, end_time, custom_headers)
@@ -135,10 +106,7 @@ class AzureMonitorMetricsInput < Input
       # Deserialize Response
       if status_code == 200
         begin
-          parsed_response = response_content.to_s.empty? ? nil : JSON.load(response_content)
-          result_mapper = Azure::Monitor::Mgmt::V2018_01_01::Models::Response.mapper()
-          #result.body = response_content.to_s.empty? ? nil : JSON.load(response_content)
-          result.body = @client.deserialize(result_mapper, parsed_response)
+          result.body = response_content.to_s.empty? ? nil : JSON.load(response_content)
         rescue Exception => e
           fail MsRest::DeserializationError.new('Error occurred in deserializing the response', e.message, e.backtrace, result)
         end
@@ -147,4 +115,5 @@ class AzureMonitorMetricsInput < Input
     end
     promise.execute
   end
+end
 end
